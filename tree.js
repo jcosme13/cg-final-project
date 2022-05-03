@@ -5,13 +5,11 @@ var gl;
 
 var program;
 
-const cameraTarget = [0, 6, 0];
-const cameraPosition = [0, 0, -10];
+const at = [0, 6, 0];
+const eye = [0, 0, -10];
+const up = [0, 1, 0];
 
-var pointsArray = []
-var normalsArray = []
-
-var lightPosition = vec4(1.0, 2.0, 5.0, 1.0); // default 10 am
+var lightPosition = vec4(1.0, 2.0, 5.0, 1.0); 
 var lightAmbient = vec4(0.3, 0.3, 0.3, 1.0);
 var lightDiffuse = vec4(1.0, 1.0, 1.0, 1.0);
 var lightSpecular = vec4(1.0, 1.0, 1.0, 1.0);
@@ -22,25 +20,15 @@ var materialDiffuse = vec4(1.0, 0.8, 0.0, 1.0);
 var materialSpecular = vec4(1.0, 0.8, 0.0, 1.0);
 var materialShininess = 100.0; // must specify shininess for specular component
 
-var ambientProduct;
-var diffuseProduct;
-var specularProduct;
+var ambient;
+var diffuse;
+var specular;
 
 var near = 0.1;
 var far = 50;
-var radius = 4.0;
-var dr = 5.0 * Math.PI / 180.0;
-var phi = -24 * dr;
-var theta = 28 * dr;
 
 var fovy = 60.0 * Math.PI / 180;        // Field-of-view in Y direction angle 
 var aspect = 1.0;       // Viewport aspect ratio
-
-var modelViewMatrix, projectionMatrix;
-var modelView, proj;
-var eye;
-const at = vec3(0.0, 0.0, 0.0);
-const up = vec3(0.0, 1.0, 0.0);
 
 var response;
 var data;
@@ -48,8 +36,7 @@ var text;
 var bufferInfo;
 var meshProgramInfo
 
-// This is not a full .obj parser.
-// see http://paulbourke.net/dataformats/obj/
+// OBJ parser from https://webglfundamentals.org/webgl/lessons/webgl-load-obj.html
 
 function parseOBJ(text) {
   // because indices are base 1 let's just fill in the 0th data
@@ -128,7 +115,7 @@ function parseOBJ(text) {
     const parts = line.split(/\s+/).slice(1);
     const handler = keywords[keyword];
     if (!handler) {
-      console.warn('unhandled keyword:', keyword);  // eslint-disable-line no-console
+      //console.warn('unhandled keyword:', keyword);  // eslint-disable-line no-console
       continue;
     }
     handler(parts, unparsedArgs);
@@ -142,10 +129,7 @@ function parseOBJ(text) {
 }
 
 window.onload = async function init() {
-  // Get A WebGL context
-  ///** @type {HTMLCanvasElement} */
-  //const canvas = document.querySelector("#canvas");
-  //const gl = canvas.getContext("webgl");
+
   canvas = document.getElementById("gl-canvas")
 
   gl = WebGLUtils.setupWebGL(canvas)
@@ -160,117 +144,114 @@ window.onload = async function init() {
   gl.enable(gl.DEPTH_TEST);
   gl.enable(gl.CULL_FACE);
 
-  program = initShaders(gl, "vertex-shader","fragment-shader");
-  gl.useProgram(program)
-
-  var cBuffer = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, cBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, flatten(normalsArray), gl.STATIC_DRAW);
-
-  var vNormal = gl.getAttribLocation(program, "vNormal");
-  gl.vertexAttribPointer(vNormal, 3, gl.FLOAT, false, 0, 0);
-  gl.enableVertexAttribArray(vNormal);
-
-  var vBuffer = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, vBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, flatten(pointsArray), gl.STATIC_DRAW);
-
-  var vPosition = gl.getAttribLocation(program, "vPosition");
-  gl.vertexAttribPointer(vPosition, 4, gl.FLOAT, false, 0, 0);
-  gl.enableVertexAttribArray(vPosition);
-
   response = await fetch('treeFolder/treeTest.obj');  
   text = await response.text();
   data = parseOBJ(text);
 
   bufferInfo = webglUtils.createBufferInfoFromArrays(gl, data);
   
-  ambientProduct = mult(lightAmbient, materialAmbient);
-  diffuseProduct = mult(lightDiffuse, materialDiffuse);
-  specularProduct = mult(lightSpecular, materialSpecular);
-
-  modelView = gl.getUniformLocation(program, "modelViewMatrix");
-  proj = gl.getUniformLocation(program, "projectionMatrix");
-
-  const vs = `
+  const vertexShader = `
   attribute vec4 a_position;
   attribute vec3 a_normal;
 
-  uniform mat4 u_projection;
-  uniform mat4 u_view;
+  uniform mat4 projectionMatrix;
+  uniform mat4 modelViewMatrix;
   uniform mat4 u_world;
 
+  uniform vec4 ambientProduct, diffuseProduct, specularProduct;
+  uniform vec4 lightPosition;
+  uniform float shininess;
+
   varying vec3 v_normal;
+  varying vec4 fColor;
 
   void main() {
-    gl_Position = u_projection * u_view * u_world * a_position;
+        vec3 pos = -(modelViewMatrix*a_position).xyz;
+
+        // fixed light position
+
+        vec3 light = lightPosition.xyz;
+        vec3 L = normalize( light - pos );
+
+        vec3 E = normalize( -pos );
+        vec3 H = normalize( L + E );
+
+        vec4 NN = vec4( a_normal, 0 );
+
+        // Transform vertex normal into eye coordinates
+
+        vec3 N = normalize( (modelViewMatrix*NN).xyz);
+
+        // Compute terms in the illumination equation
+        vec4 ambient = ambientProduct;
+
+        float Kd = max( dot(L,N), 0.0 );
+        vec4 diffuse = Kd * diffuseProduct;
+
+        float Ks = pow (max(dot(N, H), 0.0), shininess );
+        vec4 specular = Ks * specularProduct;
+
+        if  (dot(L, N) < 0.0 ){
+            specular = vec4(0.0, 0.0, 0.0, 1.0);
+        }
+
+    gl_Position = projectionMatrix * modelViewMatrix * u_world * a_position;
+    fColor = ambient + diffuse + specular;
     v_normal = mat3(u_world) * a_normal;
+
+    fColor.a = 1.0;
   }
   `;
 
-  const fs = `
+  const fragmentShader = `
   precision mediump float;
 
   varying vec3 v_normal;
 
   uniform vec4 u_diffuse;
   uniform vec3 u_lightDirection;
+  varying vec4 fColor;
 
   void main () {
     vec3 normal = normalize(v_normal);
     float fakeLight = dot(u_lightDirection, normal) * .5 + .5;
-    gl_FragColor = vec4(u_diffuse.rgb * fakeLight, u_diffuse.a);
+    gl_FragColor = vec4(fColor.rgb * fakeLight, u_diffuse.a);
+    //gl_FragColor = fColor;
   }
   `;
 
+  document.getElementById("x-button").onchange = function(event) {
+    lightPosition[0] = event.target.value;
+  };
+  document.getElementById("y-button").onchange = function(event) {
+    lightPosition[1] = event.target.value;
+  };
 
   // compiles and links the shaders, looks up attribute and uniform locations
-  meshProgramInfo = webglUtils.createProgramInfo(gl, [vs, fs]);
+  meshProgramInfo = webglUtils.createProgramInfo(gl, [vertexShader, fragmentShader]);
 
   requestAnimationFrame(render);
 }
 
-  // render function
   function render(time) {
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    time *= 0.001;  // convert to seconds
+    time *= 0.0005;
 
-    const projection = m4.perspective(fovy, aspect, near, far);
+    var projection = m4.perspective(fovy, aspect, near, far);
 
-    const up = [0, 1, 0];
-    // Compute the camera's matrix using look at.
-    const camera = m4.lookAt(cameraPosition, cameraTarget, up);
+    var camera = flatten(m4.lookAt(eye, at, up));
 
-    // Make a view matrix from the camera matrix.
-    const view = m4.inverse(camera);
+    var view = flatten(m4.inverse(camera));
 
+    ambient = flatten(mult(lightAmbient, materialAmbient));
+    diffuse = flatten(mult(lightDiffuse, materialDiffuse));
+    specular = flatten(mult(lightSpecular, materialSpecular));
 
     const sharedUniforms = {
-      u_lightDirection: m4.normalize([-1, 3, 5]),
-      u_view: view,
-      u_projection: projection,
+      u_lightDirection: m4.normalize(lightPosition),
+      modelViewMatrix: view,
+      projectionMatrix: projection,
     };
-   
-
-    eye = vec3(radius * Math.sin(theta) * Math.cos(phi),
-        radius * Math.sin(theta) * Math.sin(phi), radius * Math.cos(theta));
-
-    modelViewMatrix = lookAt(eye, at, up);
-    projectionMatrix = perspective(fovy, aspect, near, far);
-
-    gl.uniformMatrix4fv(modelView, false, flatten(modelViewMatrix));
-    gl.uniformMatrix4fv(proj, false, flatten(projectionMatrix));
-
-    gl.uniform4fv(gl.getUniformLocation(program, "ambientProduct"),
-        flatten(ambientProduct));
-    gl.uniform4fv(gl.getUniformLocation(program, "diffuseProduct"),
-        flatten(diffuseProduct));
-    gl.uniform4fv(gl.getUniformLocation(program, "specularProduct"),
-        flatten(specularProduct));
-    gl.uniform4fv(gl.getUniformLocation(program, "lightPosition"),
-        flatten(lightPosition));
-    gl.uniform1f(gl.getUniformLocation(program,
-        "shininess"), materialShininess);
 
     gl.useProgram(meshProgramInfo.program);
 
@@ -281,13 +262,20 @@ window.onload = async function init() {
     webglUtils.setBuffersAndAttributes(gl, meshProgramInfo, bufferInfo);
 
     // calls gl.uniform
-    
     webglUtils.setUniforms(meshProgramInfo, {
       u_world: m4.yRotation(time),
       u_diffuse: [1, 0.7, 0.5, 1],
     });
 
-    // calls gl.drawArrays or gl.drawElements
+    webglUtils.setUniforms(meshProgramInfo, {
+      lightPosition: lightPosition,
+      ambientProduct: ambient,
+      diffuseProduct: diffuse,
+      specularProduct: specular,
+      shininess: materialShininess,
+    });
+
+    // calls gl.drawArrays
     webglUtils.drawBufferInfo(gl, bufferInfo);
 
     requestAnimationFrame(render);
